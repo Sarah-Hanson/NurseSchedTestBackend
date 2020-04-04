@@ -4,19 +4,22 @@ using System.Text;
 
 namespace NurseScheduler {
     public class Schedulizer {
-        private PatientDistanceMatrix pdm;
+        // Tuning settings to tweak the speak and priorities for the schedule
         private readonly int maxDisparity;
         private readonly int snipLevel;
-        private readonly int preferenceMultiplier;
-        private readonly int disparityMultiplier;
+        private readonly int preferenceMult;
+        private readonly int disparityMult;
+        private readonly int distanceMult;
 
-        public Schedulizer(PatientDistanceMatrix patientDist, int maxDisparity, int snipLevel, int preferenceMultiplier, int disparityMultiplier) {
-            this.pdm = patientDist;
+        // Constructor sets all the tuning settings
+        public Schedulizer(int maxDisparity, int snipLevel, int preferenceMultiplier, int disparityMultiplier, int distanceMult) {
             this.maxDisparity = maxDisparity;
             this.snipLevel = snipLevel;
-            this.preferenceMultiplier = preferenceMultiplier;
-            this.disparityMultiplier = disparityMultiplier;
+            this.preferenceMult = preferenceMultiplier;
+            this.disparityMult = disparityMultiplier;
+            this.distanceMult = distanceMult;
         }
+        // Inout and Output classes conglomerate results to make pass by value easier
         private partial class Result {
             public bool success;
             public List<List<Nurse>> result;
@@ -52,22 +55,35 @@ namespace NurseScheduler {
                 patients.AddRange(inp.patients);
             }
         }
+        /*
+         * The root function, creates a schedule for a team based on the settings made when instantiating the schedulizer.
+         * Once all schedules are found they are scored based on:
+         *      Total disparity between nurses
+         *      Previous patient match preference
+         *      Patient clumping
+         * The Schedule with the highest score is selected and returned
+         */
         public List<Nurse> GetSchedule(Team t) {
-            Console.WriteLine("Finding Possible Schedules");
+            Console.WriteLine("Finding Possible Schedules\n"+
+                "===========================================");
             Result res = FindSched(new Input(t.Nurses, t.Patients));
             Console.WriteLine("Total Operations Performed: " + res.totalOperations);
             Console.WriteLine(res.result.Count + " Schedules found, scoring them");
-            return CalcBest(res.result, t.Preferences);
+            return CalcBest(res.result, t.Preferences, t.Rooms);
         }
+        /*
+         * The recursive bit of the algorithm
+         * uses a slightly refined brute force algorithm to dig through all permutations of nurses and patients to
+         * return all possible lists that meet a base acuity disparity.
+         */
         private Result FindSched(Input inp) {
             Result res = new Result();
             res.totalOperations++;
-            if (CalcDisparity(inp.nurses) < snipLevel)
+            if (CalcDisparity(inp.nurses) < snipLevel) // Cuts recursion off if its going off on a unintuitive tangent
                 if (inp.IsDone()) {
                     if (CalcDisparity(inp.nurses) < maxDisparity) {
                         res.success = true;
                         res.result.Add(inp.nurses);
-                        //Console.WriteLine("Ding! Result Found");
                     }
                 }
                 else {
@@ -78,17 +94,15 @@ namespace NurseScheduler {
                         res = new Result(FindSched(newInp), res); //Concats all other found solutions to result and sets to new success state
                     }
                 }
-            else {
-            }
             return res;
         }
-        // Calculates the schedule with the best score (most nurses assigned to preferential patients and lowest disparity)
-        private List<Nurse> CalcBest(List<List<Nurse>> resultList, List<Preference> prefs) {
+        // Finds the schedule with the highest score based on the criteria
+        private List<Nurse> CalcBest(List<List<Nurse>> resultList, List<Preference> prefs, List<Room> rooms) {
             //Evaluate every result, Higher score is better
             List<Nurse> bestResult = null;
             int bestScore = int.MinValue;
             foreach (List<Nurse> nl in resultList) {
-                int curScore = CalcScore(nl, prefs);
+                int curScore = CalcScore(nl, prefs, rooms);
                 if (bestScore < curScore) {
                     Console.WriteLine("|" + bestScore + "|Old:New|" + curScore + "|");
                     bestScore = curScore;
@@ -98,15 +112,11 @@ namespace NurseScheduler {
             Console.WriteLine("");
             return bestResult;
         }
-        //Calculates all the combines scores for a given result
-        private int CalcScore(List<Nurse> nl, List<Preference> prefs) {
-            int score = 0;
-            score -= CalcDisparity(nl)*disparityMultiplier;
-            score += CalcMatchScore(nl, prefs);
-            //score -= DistanceScore(nl);
-
-
-            return score;
+        //Calculates and sums all the criteria scores for a schedule
+        private int CalcScore(List<Nurse> nl, List<Preference> prefs, List<Room> rooms) {
+            return (CalcMatchScore(nl, prefs) * preferenceMult) 
+                - (CalcDisparity(nl) * disparityMult) 
+                - (CalcDistanceScore(nl, rooms) * distanceMult);
         }
         //Calculates the difference between the nurse with the greatest acuity and the nurse with the lowest accuity
         private static int CalcDisparity(List<Nurse> nurses) {
@@ -118,13 +128,14 @@ namespace NurseScheduler {
             }
             return max - min;
         }
+        // Scores the schedule based on how many preferences it matches and their weight
         private int CalcMatchScore(List<Nurse> nl, List<Preference> prefs) {
             int i = 0;
             foreach (Preference pr in prefs) {
                 foreach (Nurse n in nl) {
                     foreach (Patient p in n.Patients) {
-                        if (p.EqualTo(pr.patient) && n.EqualTo(pr.nurse)) {
-                            i += pr.weight*2;
+                        if (p.EqualTo(pr.Patient) && n.EqualTo(pr.Nurse)) {
+                            i += pr.Weight;
                         }
                     }
                 }
@@ -132,15 +143,18 @@ namespace NurseScheduler {
             return i;
         }
         // Combines all the patients distance from each other together into a score
-        private int CalcDistanceScore(List<Nurse> nl) {
-            int i = 0;
-            foreach (Nurse n in nl)
-                foreach (Patient p1 in n.Patients) {
-                    int j = pdm.GetDist(p1, n.Patients[0]);
-                    if (j >= 0)
-                        i += j;
+        private int CalcDistanceScore(List<Nurse> nl, List<Room> rooms) {
+            int totalDist = 0;
+            foreach (Nurse n in nl) {
+                if (n.Patients.Count > 0) {
+                    Room r = Room.GetRoomByPatient(rooms, n.Patients[0]);
+                    foreach (Patient p in n.Patients) {
+                        Room r2 = Room.GetRoomByPatient(rooms, p);
+                        totalDist += Room.FindPathDist(r, r2);
+                    }
                 }
-            return i;
+            }
+            return totalDist;
         }
     }
 }

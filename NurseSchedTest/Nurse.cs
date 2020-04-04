@@ -4,6 +4,7 @@ using System.Text;
 
 namespace NurseScheduler {
     public class Nurse {
+        // Constructors
         public Nurse(string name) {
             Name = name;
             Patients = new List<Patient>();
@@ -16,8 +17,12 @@ namespace NurseScheduler {
             Acuity = n.Acuity;
         }
         public List<Patient> Patients { get; }
+
+        // Properties
         public string Name { get; set; }
         public int Acuity { get; set; }
+
+        // Methods
         public void AddPatient(Patient p) {
             Patients.Add(p);
             Acuity += p.Acuity;
